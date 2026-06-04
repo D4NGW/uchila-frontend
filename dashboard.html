@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<title>UchilaBot Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+body{
+background:#04060D;
+color:white;
+font-family:Inter;
+display:flex;
+justify-content:center;
+align-items:center;
+min-height:100vh;
+}
+.box{
+background:#0d1121;
+padding:30px;
+border-radius:15px;
+width:420px;
+}
+button{
+width:100%;
+padding:12px;
+margin-top:10px;
+border:none;
+border-radius:10px;
+cursor:pointer;
+}
+.start{background:#10b981;color:white;}
+.stop{background:#ef4444;color:white;}
+</style>
+</head>
+
+<body>
+
+<div class="box">
+<h2>Dashboard</h2>
+
+<p id="status">A aguardar login...</p>
+
+<button class="start" onclick="iniciarRobo()">Start</button>
+<button class="stop" onclick="parar()">Stop</button>
+
+</div>
+
+<script src="app.js"></script>
+
+<script>
+const BACKEND_URL = "https://uchila-backend01.onrender.com";
+
+window.onload = async () => {
+
+const url = new URL(window.location.href);
+const code = url.searchParams.get("code");
+
+if(code){
+
+const verifier = sessionStorage.getItem("verifier");
+
+const res = await fetch(BACKEND_URL + "/api/trocar-token", {
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({
+code,
+code_verifier:verifier,
+redirect_uri:window.location.origin+"/dashboard.html"
+})
+});
+
+const data = await res.json();
+
+localStorage.setItem("token", data.access_token);
+
+document.getElementById("status").innerText = "Conectado ✔";
+
+conectarWebSocket(data.access_token);
+
+} else {
+
+const token = localStorage.getItem("token");
+if(token) conectarWebSocket(token);
+}
+}
+
+function iniciarRobo(){
+botAtivo = true;
+}
+
+function parar(){
+botAtivo = false;
+}
+</script>
+
+</body>
+</html>

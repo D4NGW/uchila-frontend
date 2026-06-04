@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UchilaBot Login</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+body {
+    margin:0;
+    font-family: Inter;
+    background:#04060D;
+    color:white;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}
+.card {
+    background:rgba(13,17,33,0.6);
+    padding:40px;
+    border-radius:20px;
+    text-align:center;
+    width:420px;
+}
+button {
+    width:100%;
+    padding:14px;
+    border:none;
+    border-radius:12px;
+    background:#ff444f;
+    color:white;
+    font-weight:bold;
+    cursor:pointer;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+    <h2>UCHILABOT</h2>
+    <p>Login seguro Deriv</p>
+
+    <button onclick="login()">Autorizar Deriv</button>
+</div>
+
+<script>
+const CLIENT_ID = "33nZb90yOHPIJXVFbYG39";
+const REDIRECT_URI = window.location.origin + "/dashboard.html";
+
+async function login() {
+
+    const verifier = crypto.getRandomValues(new Uint8Array(64));
+    const codeVerifier = Array.from(verifier)
+        .map(v => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[v % 62])
+        .join('');
+
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeVerifier));
+
+    const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
+        .replace(/\+/g,'-')
+        .replace(/\//g,'_')
+        .replace(/=+$/,'');
+
+    const state = crypto.randomUUID();
+
+    sessionStorage.setItem("verifier", codeVerifier);
+    sessionStorage.setItem("state", state);
+
+    const url =
+    "https://auth.deriv.com/oauth2/auth?" +
+    "response_type=code" +
+    "&client_id=" + CLIENT_ID +
+    "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
+    "&scope=trade+account_manage" +
+    "&state=" + state +
+    "&code_challenge=" + codeChallenge +
+    "&code_challenge_method=S256";
+
+    window.location.href = url;
+}
+</script>
+
+</body>
+</html>
