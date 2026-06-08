@@ -21,7 +21,7 @@ async function verificarRetornoOAuth() {
         window.history.replaceState({}, document.title, window.location.pathname);
         try {
             const codeVerifier = sessionStorage.getItem('pkce_verifier');
-            const resposta = await fetch(`${BACKEND_URL}/api/auth/callback`, {
+            const resposta = await fetch(`${BACKEND_URL}/auth/callback`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code, code_verifier: codeVerifier })
