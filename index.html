@@ -32,30 +32,60 @@
         </button>
         <div class="security-footer"><i class="fa-solid fa-shield-halved"></i> <span>Conexão Proxy Blindada Ativa</span></div>
     </div>
+      <script>
+const CLIENT_ID = "33nZb90yOHPIJXVFbYG39";
+const REDIRECT_URI = "https://uchilabotprov9.vercel.app/dashboard.html";
 
-    <script>
-        const CLIENT_ID = "33nZb90yOHPIJXVFbYG39"; 
-        const REDIRECT_URI = "https://uchilabotprov9.vercel.app/dashboard.html"; 
+async function gerarChallengeS256(verifier) {
+    const data = new TextEncoder().encode(verifier);
 
-        async function gerarChallengeS256(verifier) {
-            const encoder = new TextEncoder();
-            const data = encoder.encode(verifier);
-            const hash = await crypto.subtle.digest('SHA-256', data);
-            return btoa(String.fromCharCode(...new Uint8Array(hash)))
-                .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-        }
+    const hash = await crypto.subtle.digest(
+        "SHA-256",
+        data
+    );
 
-        async function redirecionarParaDerivOAuth() {
-            const array = new Uint32Array(32);
-            crypto.getRandomValues(array);
-            const verifier = Array.from(array, dec => ('0' + dec.toString(16)).slice(-2)).join('');
-            
-            sessionStorage.setItem("pkce_verifier", verifier);
-            const challenge = await gerarChallengeS256(verifier);
+    return btoa(
+        String.fromCharCode(...new Uint8Array(hash))
+    )
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
 
-            const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=read,trade&code_challenge=${challenge}&code_challenge_method=S256`;
-            window.location.href = oauthUrl;
-        }
-    </script>
+async function redirecionarParaDerivOAuth() {
+    try {
+        const randomBytes = new Uint8Array(32);
+        crypto.getRandomValues(randomBytes);
+
+        const verifier = Array.from(randomBytes)
+            .map(b => b.toString(16).padStart(2, "0"))
+            .join("");
+
+        sessionStorage.setItem(
+            "pkce_verifier",
+            verifier
+        );
+
+        const challenge = await gerarChallengeS256(verifier);
+
+        const oauthUrl =
+            "https://oauth.deriv.com/oauth2/authorize" +
+            "?app_id=" + encodeURIComponent(CLIENT_ID) +
+            "&response_type=code" +
+            "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
+            "&scope=read trade" +
+            "&code_challenge=" + encodeURIComponent(challenge) +
+            "&code_challenge_method=S256";
+
+        console.log("OAuth URL:", oauthUrl);
+
+        window.location.href = oauthUrl;
+
+    } catch (err) {
+        console.error(err);
+        alert("Erro ao iniciar autenticação OAuth.");
+    }
+}
+</script>
 </body>
 </html>
