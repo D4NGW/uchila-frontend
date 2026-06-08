@@ -1,244 +1,203 @@
-// ================================
-// UCHILABOT - ENGINE PROFISSIONAL
-// ================================
+const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:3000'
+    : 'https://uchila-backend01.onrender.com'; 
 
-let ws = null;
-let botAtivo = false;
-let aguardandoTrade = false;
+const WS_BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'ws://localhost:3000/api/ws'
+    : 'wss://uchila-backend01.onrender.com/api/ws';
 
-// ================================
-// ESTADO FINANCEIRO
-// ================================
-let stakeBase = 0.35;
-let stakeAtual = 0.35;
+let backendWs = null;
+let pingInterval = null; 
+let sessionId = sessionStorage.getItem('session_id');
+let signature = sessionStorage.getItem('session_signature'); 
+let reconnectDelay = 3000; 
+let estaReconectando = false; // Correção 7: Flag estrita para blindar loops no onclose
 
-let lucroTotal = 0;
-let perdasSeguidas = 0;
-let wins = 0;
-let losses = 0;
+async function verificarRetornoOAuth() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+    
+    if (code) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        try {
+            const codeVerifier = sessionStorage.getItem('pkce_verifier');
+            const resposta = await fetch(`${BACKEND_URL}/api/auth/callback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, code_verifier: codeVerifier })
+            });
 
-// limites
-let takeProfit = 2;
-let stopLoss = 5;
-
-// ================================
-// CONTROLO DE RISCO (PRO)
-// ================================
-let maxMartingale = 4;
-let martingaleLevel = 0;
-let cooldown = false;
-
-// ================================
-// CONFIGURAÇÃO
-// ================================
-const APP_ID = "33nZb90yOHPIJXVFbYG39";
-
-// ================================
-// CONEXÃO
-// ================================
-function conectarWebSocket(token){
-
-ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`);
-
-ws.onopen = () => {
-ws.send(JSON.stringify({ authorize: token }));
-};
-
-ws.onmessage = (msg) => {
-const data = JSON.parse(msg.data);
-
-if(data.error){
-console.log("Erro:", data.error.message);
-return;
+            const dados = await resposta.json();
+            if (dados.success) {
+                sessionId = dados.sessionId;
+                signature = dados.signature;
+                sessionStorage.setItem('session_id', sessionId);
+                sessionStorage.setItem('session_signature', signature);
+                sessionStorage.removeItem('pkce_verifier'); 
+                inicializarDashboard();
+            } else {
+                alert('Erro na validação do token.');
+                window.location.href = 'index.html';
+            }
+        } catch (err) {
+            console.error('Erro na rede:', err);
+        }
+    } else if (sessionId && signature) {
+        inicializarDashboard();
+    } else {
+        window.location.href = 'index.html';
+    }
 }
 
-if(data.msg_type === "authorize"){
-console.log("AUTENTICADO");
-ws.send(JSON.stringify({ ticks:"R_100" }));
+function inicializarDashboard() {
+    if (backendWs && backendWs.readyState === WebSocket.CONNECTING) return;
+
+    if (backendWs) {
+        try {
+            backendWs.onopen = null;
+            backendWs.onmessage = null;
+            backendWs.onclose = null;
+            backendWs.close();
+        } catch(e) {}
+    }
+    
+    backendWs = new WebSocket(WS_BACKEND_URL);
+
+    backendWs.onopen = () => {
+        document.getElementById('statusDot').style.background = '#10b981';
+        document.getElementById('statusText').innerText = 'Servidor Conectado';
+        reconnectDelay = 3000; 
+        estaReconectando = false; // Reseta flag ao firmar conexão estável
+        backendWs.send(JSON.stringify({ action: 'INIT', sessionId: sessionId, signature: signature }));
+
+        if (pingInterval) clearInterval(pingInterval);
+        pingInterval = setInterval(() => {
+            if (backendWs && backendWs.readyState === WebSocket.OPEN) {
+                backendWs.send(JSON.stringify({ action: 'PING' }));
+            }
+        }, 30000);
+    };
+
+    backendWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const noDataRow = document.getElementById('no-data-row');
+
+        if (data.type === 'PONG') return;
+
+        switch (data.type) {
+            case 'TICK_DATA':
+                document.getElementById('preco-display').innerText = `$${data.price.toFixed(2)}`;
+                document.getElementById('digito-display').innerText = data.digito;
+                break;
+                
+            case 'TRADE_EXECUTED':
+                if (noDataRow) noDataRow.remove();
+                adicionarLogTabela(data.message, data.contractId, 'PROCESSANDO');
+                break;
+
+            case 'TRADE_FINISHED':
+                atualizarUltimoLog(data.status, data.profit);
+                break;
+
+            case 'AUTH_SUCCESS':
+                document.getElementById('user-email').innerText = data.user;
+                break;
+
+            case 'STATUS':
+                document.getElementById('bot-status').innerText = data.message;
+                break;
+
+            case 'BOT_STOPPED':
+                document.getElementById('bot-status').innerText = 'Inativo';
+                if (data.message) alert(data.message);
+                break;
+
+            case 'ERROR':
+                if (data.message === 'SESSION_EXPIRED_CRITICAL') {
+                    alert('Sessão expirada. Reautentique-se por favor.');
+                    deslogarLimpo();
+                } else if (data.message === 'STOP_LOSS_REACHED') {
+                    alert('🚨 STOP LOSS ATINGIDO! Operações bloqueadas.');
+                    document.getElementById('bot-status').innerText = 'Bloqueado (Stop Loss)';
+                } else {
+                    alert('Servidor: ' + data.message);
+                }
+                break;
+        }
+    };
+
+    backendWs.onclose = () => {
+        document.getElementById('statusDot').style.background = '#ef4444';
+        document.getElementById('statusText').innerText = `Desconectado. Reconectando...`;
+        if (pingInterval) clearInterval(pingInterval); 
+        
+        // Correção 7: Bloqueio estrito de concorrência paralela no cronómetro do frontend
+        if (estaReconectando) return;
+        estaReconectando = true;
+
+        setTimeout(() => {
+            estaReconectando = false;
+            inicializarDashboard();
+        }, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000); 
+    };
 }
 
-if(data.msg_type === "tick"){
-const digit = Number(data.tick.quote.toString().slice(-1));
-
-processarTick(digit);
+function deslogarLimpo() {
+    sessionStorage.clear();
+    const logTable = document.getElementById('log-table');
+    if (logTable) logTable.innerHTML = ''; 
+    window.location.href = 'index.html';
 }
 
-if(data.msg_type === "buy"){
-ws.send(JSON.stringify({
-proposal_open_contract:1,
-contract_id:data.buy.contract_id,
-subscribe:1
-}));
+function adicionarLogTabela(msg, contractId, status) {
+    const tbody = document.getElementById('log-table');
+    const tr = document.createElement('tr');
+    tr.id = `contract-${contractId}`;
+    tr.innerHTML = `
+        <td>${msg}</td>
+        <td style="font-family: monospace;">${contractId}</td>
+        <td><span class="badge" style="background: rgba(255,193,7,0.1); color: #ffc107;">${status}</span></td>
+    `;
+    tbody.insertBefore(tr, tbody.firstChild);
 }
 
-if(data.msg_type === "proposal_open_contract"){
-const c = data.proposal_open_contract.contract;
-
-if(c && c.status !== "open"){
-processarResultado(parseFloat(c.profit));
-}
-}
-
-};
-
-ws.onclose = () => {
-setTimeout(()=>conectarWebSocket(token), 4000);
-};
-}
-
-// ================================
-// ENGINE DE DECISÃO (ESTRATÉGIAS)
-// ================================
-function processarTick(digit){
-
-if(!botAtivo) return;
-if(aguardandoTrade) return;
-if(cooldown) return;
-
-const estrategia = getEstrategia();
-
-switch(estrategia){
-
-case "CONSERVADOR":
-if(digit === 7 || digit === 8){
-executarTrade("DIGITOVER", 4);
-}
-break;
-
-case "MARTINGALE_SAFE":
-if(digit === 5){
-executarTrade("DIGITOVER", 4);
-}
-break;
-
-case "REVERSAO":
-if(digit >= 8){
-executarTrade("DIGITUNDER", 7);
-}
-break;
-
-case "SCALP":
-if(digit % 2 === 0){
-executarTrade("DIGITOVER", 4);
-}else{
-executarTrade("DIGITUNDER", 5);
-}
-break;
+function atualizarUltimoLog(status, profit) {
+    const badges = document.getElementsByClassName('badge');
+    if(badges.length > 0) {
+        const targetBadge = badges[0]; 
+        if (status === 'won') {
+            targetBadge.className = 'badge badge-win';
+            targetBadge.innerText = `WIN (+$${profit})`;
+        } else {
+            targetBadge.className = 'badge badge-loss';
+            targetBadge.innerText = `LOSS ($${profit})`;
+        }
+    }
 }
 
-}
+document.getElementById('btnStartBot').addEventListener('click', () => {
+    if (backendWs && backendWs.readyState === WebSocket.OPEN) {
+        const stakeVal = parseFloat(document.getElementById('stake-input').value) || 0.35;
+        backendWs.send(JSON.stringify({ 
+            action: 'START_BOT', 
+            stake: stakeVal,
+            config: {
+                tamanhoAmostra: 10,
+                digitoGatilho: 2,
+                maxRepeticoesZero: 0,
+                maxRepeticoesUm: 1,
+                maxConsecLosses: 3, 
+                barrier: '0'
+            }
+        }));
+    }
+});
 
-// ================================
-// EXECUÇÃO DE TRADES
-// ================================
-function executarTrade(tipo, barrier){
+document.getElementById('btnStopBot').addEventListener('click', () => {
+    if (backendWs && backendWs.readyState === WebSocket.OPEN) {
+        backendWs.send(JSON.stringify({ action: 'STOP_BOT' }));
+    }
+});
 
-if(aguardandoTrade) return;
-
-aguardandoTrade = true;
-
-ws.send(JSON.stringify({
-buy:1,
-price:stakeAtual,
-parameters:{
-amount:stakeAtual,
-basis:"stake",
-contract_type:tipo,
-currency:"USD",
-duration:1,
-duration_unit:"t",
-symbol:"R_100",
-barrier:String(barrier)
-}
-}));
-
-}
-
-// ================================
-// RESULTADO + MARTINGALE CONTROLADO
-// ================================
-function processarResultado(profit){
-
-aguardandoTrade = false;
-
-lucroTotal += profit;
-
-if(profit > 0){
-
-wins++;
-martingaleLevel = 0;
-stakeAtual = stakeBase;
-
-}else{
-
-losses++;
-perdasSeguidas++;
-martingaleLevel++;
-
-// MARTINGALE LIMITADO
-if(martingaleLevel > maxMartingale){
-martingaleLevel = 0;
-stakeAtual = stakeBase;
-cooldownBot();
-}else{
-stakeAtual = stakeBase * Math.pow(2, martingaleLevel);
-}
-
-}
-
-// STOP RULES
-if(lucroTotal >= takeProfit){
-console.log("TAKE PROFIT BATIDO");
-parar();
-}
-
-if(lucroTotal <= -stopLoss){
-console.log("STOP LOSS BATIDO");
-parar();
-}
-
-}
-
-// ================================
-// SISTEMA DE ESTRATÉGIA DINÂMICO
-// ================================
-function getEstrategia(){
-
-if(perdasSeguidas >= 3){
-return "REVERSAO";
-}
-
-if(martingaleLevel > 1){
-return "MARTINGALE_SAFE";
-}
-
-return "CONSERVADOR";
-}
-
-// ================================
-// COOLDOWN PROTECTION
-// ================================
-function cooldownBot(){
-cooldown = true;
-setTimeout(()=>{
-cooldown = false;
-}, 10000);
-}
-
-// ================================
-// CONTROLES
-// ================================
-function iniciarRobo(){
-botAtivo = true;
-}
-
-function parar(){
-botAtivo = false;
-}
-
-// ================================
-// EXPORT GLOBAL
-// ================================
-window.conectarWebSocket = conectarWebSocket;
-window.iniciarRobo = iniciarRobo;
-window.parar = parar;
+window.onload = verificarRetornoOAuth;
