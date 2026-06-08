@@ -1,89 +1,61 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>UchilaBot Login</title>
-
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-
-<style>
-body {
-    margin:0;
-    font-family: Inter;
-    background:#04060D;
-    color:white;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    height:100vh;
-}
-.card {
-    background:rgba(13,17,33,0.6);
-    padding:40px;
-    border-radius:20px;
-    text-align:center;
-    width:420px;
-}
-button {
-    width:100%;
-    padding:14px;
-    border:none;
-    border-radius:12px;
-    background:#ff444f;
-    color:white;
-    font-weight:bold;
-    cursor:pointer;
-}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔐</text></svg>">
+    <title>UchilaBot - Login Seguro</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; }
+        body { background: #04060D; color: #f3f4f6; min-height: 100vh; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle at 50% 50%, rgba(255, 68, 79, 0.15), transparent 50%), #04060D; z-index: -1; }
+        .login-card { background: rgba(13, 17, 33, 0.7); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.06); width: 100%; max-width: 450px; border-radius: 28px; padding: 40px 30px; text-align: center; box-shadow: 0 30px 60px rgba(0,0,0,0.6); }
+        .logo h1 { font-size: 28px; font-weight: 800; letter-spacing: 2px; margin-bottom: 10px; }
+        .logo .uchila { color: #ffffff; }
+        .logo .deriv { color: #ff444f; text-shadow: 0 0 20px rgba(255,68,79,0.3); }
+        p.subtitle { color: #9ca3af; font-size: 14px; margin-bottom: 35px; font-weight: 400; line-height: 1.5; }
+        .btn-login { width: 100%; height: 56px; background: #ff444f; color: white; border: none; border-radius: 16px; font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 12px; box-shadow: 0 10px 25px rgba(255, 68, 79, 0.25); }
+        .btn-login:hover { transform: translateY(-2px); background: #e03a44; box-shadow: 0 15px 30px rgba(255, 68, 79, 0.35); }
+        .security-footer { display: flex; align-items: center; justify-content: center; gap: 8px; color: #6b7280; font-size: 12px; margin-top: 30px; font-weight: 500; border-top: 1px solid rgba(255,255,255,0.03); padding-top: 20px; }
+        .security-footer i { color: #10b981; }
+    </style>
 </head>
-
 <body>
+    <div class="bg"></div>
+    <div class="login-card">
+        <div class="logo"><h1><span class="uchila">UCHILA</span><span class="deriv">BOT</span></h1></div>
+        <p class="subtitle">Plataforma Avançada de Trading Automatizado.<br>Autentique-se via OAuth oficial da Deriv.</p>
+        <button class="btn-login" onclick="redirecionarParaDerivOAuth()">
+            <i class="fa-solid fa-right-to-bracket"></i> Entrar com a Conta Deriv
+        </button>
+        <div class="security-footer"><i class="fa-solid fa-shield-halved"></i> <span>Conexão Proxy Blindada Ativa</span></div>
+    </div>
 
-<div class="card">
-    <h2>UCHILABOT</h2>
-    <p>Login seguro Deriv</p>
+    <script>
+        const CLIENT_ID = "33nZb9Oy0HPJLXVFbYG39"; 
+        const REDIRECT_URI = "https://uchilabotv9.vercel.app/dashboard.html"; 
 
-    <button onclick="login()">Autorizar Deriv</button>
-</div>
+        async function gerarChallengeS256(verifier) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(verifier);
+            const hash = await crypto.subtle.digest('SHA-256', data);
+            return btoa(String.fromCharCode(...new Uint8Array(hash)))
+                .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+        }
 
-<script>
-const CLIENT_ID = "33nZb90yOHPIJXVFbYG39";
-const REDIRECT_URI = window.location.origin + "/dashboard.html";
+        async function redirecionarParaDerivOAuth() {
+            const array = new Uint32Array(32);
+            crypto.getRandomValues(array);
+            const verifier = Array.from(array, dec => ('0' + dec.toString(16)).slice(-2)).join('');
+            
+            sessionStorage.setItem("pkce_verifier", verifier);
+            const challenge = await gerarChallengeS256(verifier);
 
-async function login() {
-
-    const verifier = crypto.getRandomValues(new Uint8Array(64));
-    const codeVerifier = Array.from(verifier)
-        .map(v => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[v % 62])
-        .join('');
-
-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeVerifier));
-
-    const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
-        .replace(/\+/g,'-')
-        .replace(/\//g,'_')
-        .replace(/=+$/,'');
-
-    const state = crypto.randomUUID();
-
-    sessionStorage.setItem("verifier", codeVerifier);
-    sessionStorage.setItem("state", state);
-
-    const url =
-    "https://auth.deriv.com/oauth2/auth?" +
-    "response_type=code" +
-    "&client_id=" + CLIENT_ID +
-    "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
-    "&scope=trade+account_manage" +
-    "&state=" + state +
-    "&code_challenge=" + codeChallenge +
-    "&code_challenge_method=S256";
-
-    window.location.href = url;
-}
-</script>
-
+            const oauthUrl = `https://oauth.deriv.com/oauth2/authorize?app_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=read,trade&code_challenge=${challenge}&code_challenge_method=S256`;
+            window.location.href = oauthUrl;
+        }
+    </script>
 </body>
 </html>
