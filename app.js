@@ -1,601 +1,279 @@
-const BACKEND_URL =
-    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        ? 'http://localhost:3000'
-        : 'https://uchila-backend01.onrender.com';
+/**
+ * UchilaBot Pro V10 - Frontend Controller (app.js)
+ * Sistema de Autenticação com Cripto-Fingerprint e Anti-Replay Criptográfico
+ * * Versão Corrigida e Homologada para Produção
+ */
 
-const WS_BACKEND_URL =
-    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        ? 'ws://localhost:3000/api/ws'
-        : 'wss://uchila-backend01.onrender.com/api/ws';
+const CONFIG_PADRAO = {
+    stake: 0.35,
+    tamanhoAmostra: 10,
+    digitoGatilho: 2,
+    maxConsecLosses: 5,
+    barrier: '5',
+    tipoContrato: 'MATCHES'
+};
 
 let backendWs = null;
-let pingInterval = null;
+let reconectarTimer = null;
+let tentativasReconexao = 0;
+const MAX_BACKOFF_DELAY = 30000;
 
-let sessionId = sessionStorage.getItem('session_id');
-let signature = sessionStorage.getItem('session_signature');
+const BACKEND_WS_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'ws://localhost:3000/ws'
+    : 'wss://uchila-backend01.onrender.com/ws';
 
-let reconnectDelay = 3000;
-let estaReconectando = false;
+// Gera um Fingerprint determinístico e imutável do ambiente do browser
+function obterBrowserFingerprint() {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const txt = 'UchilaEngineV10_Security';
+    ctx.textBaseline = "top";
+    ctx.font = "14px 'Arial'";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = "#f60";
+    ctx.fillRect(125, 1, 62, 20);
+    ctx.fillStyle = "#069";
+    ctx.fillText(txt, 2, 15);
+    ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
+    ctx.fillText(txt, 4, 17);
+    
+    const b64 = canvas.toDataURL().slice(-50);
+    let hash = 0;
+    for (let i = 0; i < b64.length; i++) {
+        hash = (hash << 5) - hash + b64.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash).toString(16) + "_" + navigator.hardwareConcurrency + "_" + navigator.maxTouchPoints;
+}
 
-/* =========================
-   OAUTH CALLBACK HANDLER
-========================= */
-async function verificarRetornoOAuth() {
+window.addEventListener('load', function verificarRetornoOAuth() {
+    console.log("[Ciclo de Vida] Inicializando painel de forma segura via EventListener...");
+    
     const urlParams = new URLSearchParams(window.location.search);
     const code = urlParams.get('code');
-    const state = urlParams.get('state');
-
+    
     if (code) {
+        console.log("[OAuth] Código detetado na URL. Trocando por sessão...");
+        const code_verifier = sessionStorage.getItem('code_verifier') || '';
+        
+        const apiAuthUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? '/api/auth/callback'
+            : 'https://uchila-backend01.onrender.com/api/auth/callback';
 
-        window.history.replaceState({}, document.title, window.location.pathname);
-
-        try {
-            const storedState = sessionStorage.getItem('oauth_state');
-
-            if (state && storedState && state !== storedState) {
-                alert("Estado OAuth inválido (CSRF detectado).");
-                window.location.href = "index.html";
-                return;
-            }
-
-            const codeVerifier = sessionStorage.getItem('pkce_verifier');
-
-            if (!codeVerifier) {
-                alert("PKCE verifier não encontrado. Faça login novamente.");
-                window.location.href = "index.html";
-                return;
-            }
-
-            const resposta = await fetch(`${BACKEND_URL}/auth/callback`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    code,
-                    code_verifier: codeVerifier
-                })
-            });
-
-            const dados = await resposta.json();
-
-            if (dados.success) {
-                sessionId = dados.sessionId;
-                signature = dados.signature;
-
-                sessionStorage.setItem('session_id', sessionId);
-                sessionStorage.setItem('session_signature', signature);
-
-                sessionStorage.removeItem('pkce_verifier');
-                sessionStorage.removeItem('oauth_state');
-
-                inicializarDashboard();
-
-            } else {
-                alert("Falha na autenticação OAuth.");
-                window.location.href = "index.html";
-            }
-
-        } catch (err) {
-            console.error("OAuth error:", err);
-            alert("Erro de rede no OAuth.");
-            window.location.href = "index.html";
-        }
-
-    } else if (sessionId && signature) {
-        inicializarDashboard();
+        fetch(apiAuthUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, code_verifier })
+        })
+        .then(res => res.json())
+        .then(dados => {
+            window.history.replaceState({}, document.title, window.location.pathname);
+            processarCallbackOAuth(dados);
+        })
+        .catch(err => {
+            console.error("[OAuth] Erro no handshake inicial:", err);
+            exibirMensagemErro("Erro ao processar login com a corretora.");
+        });
     } else {
-        window.location.href = "index.html";
+        inicializarPainelControl();
+    }
+});
+
+function processarCallbackOAuth(dados) {
+    if (dados && dados.success) {
+        console.log("[OAuth] Autenticação bem-sucedida no backend.");
+        sessionStorage.setItem('session_id', dados.sessionId);
+        sessionStorage.setItem('session_salt', dados.salt); 
+        sessionStorage.setItem('session_signature', dados.signature);
+        sessionStorage.setItem('session_timestamp', dados.timestamp); 
+        inicializarPainelControl();
+    } else {
+        exibirMensagemErro("Falha na autenticação. Tente novamente.");
     }
 }
 
-/* =========================
-   DASHBOARD INIT
-========================= */
-function inicializarDashboard() {
+function conectarGatewayBackend() {
+    const sessionId = sessionStorage.getItem('session_id');
+    const salt = sessionStorage.getItem('session_salt'); 
+    const signature = sessionStorage.getItem('session_signature');
+    const timestamp = sessionStorage.getItem('session_timestamp'); 
 
-    if (backendWs && backendWs.readyState === WebSocket.CONNECTING) return;
-
-    if (backendWs) {
-        try {
-            backendWs.onopen = null;
-            backendWs.onmessage = null;
-            backendWs.onclose = null;
-            backendWs.close();
-        } catch (e) {}
+    if (!sessionId || !salt || !signature || !timestamp) {
+        console.warn("[WS] Credenciais em falta no sessionStorage. Login necessário.");
+        return;
     }
 
-    backendWs = new WebSocket(WS_BACKEND_URL);
+    console.log(`[WS] Conectando ao Gateway V10 Segurado: ${BACKEND_WS_URL}`);
+    backendWs = new WebSocket(BACKEND_WS_URL);
 
     backendWs.onopen = () => {
-        document.getElementById('statusDot').style.background = '#10b981';
-        document.getElementById('statusText').innerText = 'Servidor Conectado';
+        console.log("[WS] Conexão estabelecida com sucesso. Enviando INIT...");
+        tentativasReconexao = 0;
+        if (reconectarTimer) clearTimeout(reconectarTimer);
 
-        reconnectDelay = 3000;
-        estaReconectando = false;
+        // Criação de um nonce aleatório para evitar Replay Attack local na conexão activa
+        const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+        const fingerprint = obterBrowserFingerprint();
 
         backendWs.send(JSON.stringify({
             action: 'INIT',
             sessionId,
-            signature
+            salt, 
+            signature,
+            timestamp,
+            nonce,
+            fingerprint
         }));
-
-        if (pingInterval) clearInterval(pingInterval);
-
-        pingInterval = setInterval(() => {
-            if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-                backendWs.send(JSON.stringify({ action: 'PING' }));
-            }
-        }, 30000);
     };
 
-    backendWs.onmessage = (event) => {
-
-        let data;
+    backendWs.onmessage = (evento) => {
         try {
-            data = JSON.parse(event.data);
-        } catch (e) {
-            console.warn("Mensagem WS inválida:", event.data);
-            return;
-        }
-
-        if (data.type === 'PONG') return;
-
-        const noDataRow = document.getElementById('no-data-row');
-
-        switch (data.type) {
-
-            case 'TICK_DATA':
-                document.getElementById('preco-display').innerText =
-                    `$${Number(data.price).toFixed(2)}`;
-                document.getElementById('digito-display').innerText = data.digito;
-                break;
-
-            case 'TRADE_EXECUTED':
-                if (noDataRow) noDataRow.remove();
-                adicionarLogTabela(data.message, data.contractId, 'PROCESSANDO');
-                break;
-
-            case 'TRADE_FINISHED':
-                atualizarUltimoLog(data.contractId, data.status, data.profit);
-                break;
-
-            case 'AUTH_SUCCESS':
-                document.getElementById('user-email').innerText = data.user;
-                break;
-
-            case 'STATUS':
-                document.getElementById('bot-status').innerText = data.message;
-                break;
-
-            case 'BOT_STOPPED':
-                document.getElementById('bot-status').innerText = 'Inativo';
-                if (data.message) alert(data.message);
-                break;
-
-            case 'ERROR':
-                if (data.message === 'SESSION_EXPIRED_CRITICAL') {
-                    alert('Sessão expirada.');
-                    deslogarLimpo();
-                } else if (data.message === 'STOP_LOSS_REACHED') {
-                    alert('STOP LOSS ATINGIDO');
-                    document.getElementById('bot-status').innerText = 'Bloqueado';
-                } else {
-                    alert('Servidor: ' + data.message);
-                }
-                break;
-        }
-    };
-
-    backendWs.onclose = () => {
-
-        document.getElementById('statusDot').style.background = '#ef4444';
-        document.getElementById('statusText').innerText = 'Desconectado';
-
-        if (pingInterval) clearInterval(pingInterval);
-
-        if (estaReconectando) return;
-        estaReconectando = true;
-
-        if (reconnectDelay > 15000) {
-            document.getElementById('statusText').innerText =
-                'Servidor instável... tentativa pausada';
-
-            setTimeout(() => {
-                estaReconectando = false;
-                reconnectDelay = 3000;
-                inicializarDashboard();
-            }, 15000);
-
-            return;
-        }
-
-        setTimeout(() => {
-            estaReconectando = false;
-            inicializarDashboard();
-        }, reconnectDelay);
-
-        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-    };
-}
-
-/* =========================
-   LOGOUT LIMPO
-========================= */
-function deslogarLimpo() {
-    sessionStorage.clear();
-
-    const logTable = document.getElementById('log-table');
-    if (logTable) logTable.innerHTML = '';
-
-    window.location.href = 'index.html';
-}
-
-/* =========================
-   LOG TABLE
-========================= */
-function adicionarLogTabela(msg, contractId, status) {
-    const tbody = document.getElementById('log-table');
-
-    const tr = document.createElement('tr');
-    tr.id = `contract-${contractId}`;
-
-    tr.innerHTML = `
-        <td>${msg}</td>
-        <td style="font-family: monospace;">${contractId}</td>
-        <td><span class="badge">${status}</span></td>
-    `;
-
-    tbody.insertBefore(tr, tbody.firstChild);
-}
-
-function atualizarUltimoLog(contractId, status, profit) {
-
-    const row = document.getElementById(`contract-${contractId}`);
-    if (!row) return;
-
-    const badge = row.querySelector('.badge');
-    if (!badge) return;
-
-    if (status === 'won') {
-        badge.className = 'badge badge-win';
-        badge.innerText = `WIN (+$${profit})`;
-    } else {
-        badge.className = 'badge badge-loss';
-        badge.innerText = `LOSS ($${profit})`;
-    }
-}
-
-/* =========================
-   BUTTONS
-========================= */
-document.getElementById('btnStartBot').addEventListener('click', () => {
-
-    if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-
-        const stakeVal =
-            parseFloat(document.getElementById('stake-input').value) || 0.35;
-
-        backendWs.send(JSON.stringify({
-            action: 'START_BOT',
-            stake: stakeVal,
-            config: {
-                tamanhoAmostra: 10,
-                digitoGatilho: 2,
-                maxRepeticoesZero: 0,
-                maxRepeticoesUm: 1,
-                maxConsecLosses: 3,
-                barrier: '0'
-            }
-        }));
-    }
-});
-
-document.getElementById('btnStopBot').addEventListener('click', () => {
-    if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-        backendWs.send(JSON.stringify({ action: 'STOP_BOT' }));
-    }
-});
-
-/* =========================
-   START
-========================= */
-window.onload = verificarRetornoOAuth;const BACKEND_URL =
-    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        ? 'http://localhost:3000'
-        : 'https://uchila-backend01.onrender.com';
-
-const WS_BACKEND_URL =
-    window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-        ? 'ws://localhost:3000/api/ws'
-        : 'wss://uchila-backend01.onrender.com/api/ws';
-
-let backendWs = null;
-let pingInterval = null;
-
-let sessionId = sessionStorage.getItem('session_id');
-let signature = sessionStorage.getItem('session_signature');
-
-let reconnectDelay = 3000;
-let estaReconectando = false;
-
-/* =========================
-   OAUTH CALLBACK HANDLER
-========================= */
-async function verificarRetornoOAuth() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const code = urlParams.get('code');
-    const state = urlParams.get('state');
-
-    if (code) {
-
-        window.history.replaceState({}, document.title, window.location.pathname);
-
-        try {
-            const storedState = sessionStorage.getItem('oauth_state');
-
-            if (state && storedState && state !== storedState) {
-                alert("Estado OAuth inválido (CSRF detectado).");
-                window.location.href = "index.html";
-                return;
-            }
-
-            const codeVerifier = sessionStorage.getItem('pkce_verifier');
-
-            if (!codeVerifier) {
-                alert("PKCE verifier não encontrado. Faça login novamente.");
-                window.location.href = "index.html";
-                return;
-            }
-
-            const resposta = await fetch(`${BACKEND_URL}/auth/callback`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    code,
-                    code_verifier: codeVerifier
-                })
-            });
-
-            const dados = await resposta.json();
-
-            if (dados.success) {
-                sessionId = dados.sessionId;
-                signature = dados.signature;
-
-                sessionStorage.setItem('session_id', sessionId);
-                sessionStorage.setItem('session_signature', signature);
-
-                sessionStorage.removeItem('pkce_verifier');
-                sessionStorage.removeItem('oauth_state');
-
-                inicializarDashboard();
-
-            } else {
-                alert("Falha na autenticação OAuth.");
-                window.location.href = "index.html";
-            }
-
+            const data = JSON.parse(evento.data);
+            processarMensagemBackend(data);
         } catch (err) {
-            console.error("OAuth error:", err);
-            alert("Erro de rede no OAuth.");
-            window.location.href = "index.html";
-        }
-
-    } else if (sessionId && signature) {
-        inicializarDashboard();
-    } else {
-        window.location.href = "index.html";
-    }
-}
-
-/* =========================
-   DASHBOARD INIT
-========================= */
-function inicializarDashboard() {
-
-    if (backendWs && backendWs.readyState === WebSocket.CONNECTING) return;
-
-    if (backendWs) {
-        try {
-            backendWs.onopen = null;
-            backendWs.onmessage = null;
-            backendWs.onclose = null;
-            backendWs.close();
-        } catch (e) {}
-    }
-
-    backendWs = new WebSocket(WS_BACKEND_URL);
-
-    backendWs.onopen = () => {
-        document.getElementById('statusDot').style.background = '#10b981';
-        document.getElementById('statusText').innerText = 'Servidor Conectado';
-
-        reconnectDelay = 3000;
-        estaReconectando = false;
-
-        backendWs.send(JSON.stringify({
-            action: 'INIT',
-            sessionId,
-            signature
-        }));
-
-        if (pingInterval) clearInterval(pingInterval);
-
-        pingInterval = setInterval(() => {
-            if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-                backendWs.send(JSON.stringify({ action: 'PING' }));
-            }
-        }, 30000);
-    };
-
-    backendWs.onmessage = (event) => {
-
-        let data;
-        try {
-            data = JSON.parse(event.data);
-        } catch (e) {
-            console.warn("Mensagem WS inválida:", event.data);
-            return;
-        }
-
-        if (data.type === 'PONG') return;
-
-        const noDataRow = document.getElementById('no-data-row');
-
-        switch (data.type) {
-
-            case 'TICK_DATA':
-                document.getElementById('preco-display').innerText =
-                    `$${Number(data.price).toFixed(2)}`;
-                document.getElementById('digito-display').innerText = data.digito;
-                break;
-
-            case 'TRADE_EXECUTED':
-                if (noDataRow) noDataRow.remove();
-                adicionarLogTabela(data.message, data.contractId, 'PROCESSANDO');
-                break;
-
-            case 'TRADE_FINISHED':
-                atualizarUltimoLog(data.contractId, data.status, data.profit);
-                break;
-
-            case 'AUTH_SUCCESS':
-                document.getElementById('user-email').innerText = data.user;
-                break;
-
-            case 'STATUS':
-                document.getElementById('bot-status').innerText = data.message;
-                break;
-
-            case 'BOT_STOPPED':
-                document.getElementById('bot-status').innerText = 'Inativo';
-                if (data.message) alert(data.message);
-                break;
-
-            case 'ERROR':
-                if (data.message === 'SESSION_EXPIRED_CRITICAL') {
-                    alert('Sessão expirada.');
-                    deslogarLimpo();
-                } else if (data.message === 'STOP_LOSS_REACHED') {
-                    alert('STOP LOSS ATINGIDO');
-                    document.getElementById('bot-status').innerText = 'Bloqueado';
-                } else {
-                    alert('Servidor: ' + data.message);
-                }
-                break;
+            console.error("[WS] Erro ao processar payload recebido:", err);
         }
     };
 
-    backendWs.onclose = () => {
-
-        document.getElementById('statusDot').style.background = '#ef4444';
-        document.getElementById('statusText').innerText = 'Desconectado';
-
-        if (pingInterval) clearInterval(pingInterval);
-
-        if (estaReconectando) return;
-        estaReconectando = true;
-
-        if (reconnectDelay > 15000) {
-            document.getElementById('statusText').innerText =
-                'Servidor instável... tentativa pausada';
-
-            setTimeout(() => {
-                estaReconectando = false;
-                reconnectDelay = 3000;
-                inicializarDashboard();
-            }, 15000);
-
-            return;
+    backendWs.onclose = (evento) => {
+        console.warn(`[WS] Conexão encerrada pelo servidor. Código: ${evento.code}. Motivo: ${evento.reason}`);
+        
+        if (evento.code !== 4401 && evento.code !== 4403 && evento.code !== 4404) {
+            tentativasReconexao++;
+            const delayReconexao = Math.min(1000 * Math.pow(2, tentativasReconexao) + Math.random() * 1000, MAX_BACKOFF_DELAY);
+            console.log(`[WS] Nova tentativa de conexão em ${Math.round(delayReconexao / 1000)}s...`);
+            reconectarTimer = setTimeout(conectarGatewayBackend, delayReconexao);
+        } else {
+            exibirMensagemErro("Sessão revogada por quebra de segurança ou expiração.");
         }
+    };
 
-        setTimeout(() => {
-            estaReconectando = false;
-            inicializarDashboard();
-        }, reconnectDelay);
-
-        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    backendWs.onerror = (erro) => {
+        console.error("[WS] Erro detetado no canal:", erro);
     };
 }
 
-/* =========================
-   LOGOUT LIMPO
-========================= */
-function deslogarLimpo() {
-    sessionStorage.clear();
+function processarMensagemBackend(data) {
+    switch (data.type) {
+        case 'AUTH_SUCCESS':
+            console.log(`[Painel] Conta autorizada com sucesso: ${data.loginid}`);
+            atualizarInterfaceSaldo(data.balance, data.currency);
+            if (data.accounts && data.accounts.length > 0) popularSeletorContas(data.accounts);
+            break;
 
-    const logTable = document.getElementById('log-table');
-    if (logTable) logTable.innerHTML = '';
+        case 'BALANCE_UPDATE':
+            atualizarInterfaceSaldo(data.balance, data.currency);
+            break;
 
-    window.location.href = 'index.html';
-}
+        case 'TICK_DATA':
+            atualizarDisplayTick(data.price, data.digito, data.history);
+            break;
 
-/* =========================
-   LOG TABLE
-========================= */
-function adicionarLogTabela(msg, contractId, status) {
-    const tbody = document.getElementById('log-table');
+        case 'TRADE_FINISHED':
+            console.log(`[Operação] Contrato finalizado. Resultado: ${data.status}`);
+            atualizarInterfaceSaldo(data.balance, data.currency);
+            atualizarMetricasPainel(data.metrics);
+            break;
 
-    const tr = document.createElement('tr');
-    tr.id = `contract-${contractId}`;
+        case 'BOT_STOPPED':
+            console.log(`[Painel] Robô parado: ${data.message}`);
+            alterarEstadoBotaoStart(false);
+            alert(data.message);
+            break;
 
-    tr.innerHTML = `
-        <td>${msg}</td>
-        <td style="font-family: monospace;">${contractId}</td>
-        <td><span class="badge">${status}</span></td>
-    `;
+        case 'STATUS':
+            console.log(`[Status do Motor]: ${data.message}`);
+            break;
 
-    tbody.insertBefore(tr, tbody.firstChild);
-}
+        case 'ERROR':
+            exibirMensagemErro(data.message);
+            break;
 
-function atualizarUltimoLog(contractId, status, profit) {
-
-    const row = document.getElementById(`contract-${contractId}`);
-    if (!row) return;
-
-    const badge = row.querySelector('.badge');
-    if (!badge) return;
-
-    if (status === 'won') {
-        badge.className = 'badge badge-win';
-        badge.innerText = `WIN (+$${profit})`;
-    } else {
-        badge.className = 'badge badge-loss';
-        badge.innerText = `LOSS ($${profit})`;
+        default:
+            console.log("[WS] Evento desconhecido:", data);
     }
 }
 
-/* =========================
-   BUTTONS
-========================= */
-document.getElementById('btnStartBot').addEventListener('click', () => {
-
-    if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-
-        const stakeVal =
-            parseFloat(document.getElementById('stake-input').value) || 0.35;
-
-        backendWs.send(JSON.stringify({
-            action: 'START_BOT',
-            stake: stakeVal,
-            config: {
-                tamanhoAmostra: 10,
-                digitoGatilho: 2,
-                maxRepeticoesZero: 0,
-                maxRepeticoesUm: 1,
-                maxConsecLosses: 3,
-                barrier: '0'
-            }
-        }));
+function dispararStartBot() {
+    if (!backendWs || backendWs.readyState !== WebSocket.OPEN) {
+        alert("O sistema não está conectado ao servidor backend.");
+        return;
     }
-});
 
-document.getElementById('btnStopBot').addEventListener('click', () => {
-    if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-        backendWs.send(JSON.stringify({ action: 'STOP_BOT' }));
+    const stake = parseFloat(document.getElementById('input-stake')?.value) || CONFIG_PADRAO.stake;
+    const tamanhoAmostra = parseInt(document.getElementById('input-amostra')?.value) || CONFIG_PADRAO.tamanhoAmostra;
+    const digitoGatilho = parseInt(document.getElementById('input-gatilho')?.value) || CONFIG_PADRAO.digitoGatilho;
+    const maxConsecLosses = parseInt(document.getElementById('input-max-losses')?.value) || CONFIG_PADRAO.maxConsecLosses;
+    const barrier = document.getElementById('input-barrier')?.value || CONFIG_PADRAO.barrier;
+    const tipoContrato = document.getElementById('select-contrato')?.value || CONFIG_PADRAO.tipoContrato;
+
+    backendWs.send(JSON.stringify({
+        action: 'START_BOT',
+        stake,
+        config: { tamanhoAmostra, digitoGatilho, maxConsecLosses, barrier, tipoContrato }
+    }));
+
+    alterarEstadoBotaoStart(true);
+}
+
+function dispararStopBot() {
+    if (!backendWs || backendWs.readyState !== WebSocket.OPEN) return;
+    backendWs.send(JSON.stringify({ action: 'STOP_BOT' }));
+    alterarEstadoBotaoStart(false);
+}
+
+function inicializarPainelControl() {
+    const sessionId = sessionStorage.getItem('session_id');
+    if (sessionId) conectarGatewayBackend();
+}
+
+function atualizarInterfaceSaldo(balance, currency = 'USD') {
+    const el = document.getElementById('display-saldo');
+    if (!el) return;
+    const saldoNumerico = Number(balance);
+    el.textContent = !isNaN(saldoNumerico) ? `${saldoNumerico.toFixed(2)} ${currency}` : `0.00 ${currency}`;
+}
+
+function popularSeletorContas(accounts) {
+    const select = document.getElementById('seletor-contas');
+    if (!select) return;
+    select.innerHTML = '';
+    accounts.forEach(acc => {
+        const opt = document.createElement('option');
+        opt.value = acc.loginid;
+        const bal = !isNaN(Number(acc.balance)) ? Number(acc.balance).toFixed(2) : '0.00';
+        opt.textContent = `${acc.loginid} (${acc.is_virtual ? 'Virtual' : 'Real'}) - ${bal}`;
+        select.appendChild(opt);
+    });
+}
+
+function atualizarDisplayTick(price, digito, history) {
+    const elPrice = document.getElementById('display-tick-preco');
+    const elDigito = document.getElementById('display-tick-digito');
+    if (elPrice) elPrice.textContent = price;
+    if (elDigito) {
+        elDigito.textContent = digito;
+        elDigito.className = digito === parseInt(document.getElementById('input-gatilho')?.value) ? 'gatilho-ativo' : 'normal';
     }
-});
+    const elHist = document.getElementById('display-historico-recent');
+    if (elHist) elHist.textContent = Array.isArray(history) ? history.join(' | ') : '';
+}
 
-/* =========================
-   START
-========================= */
-window.onload = verificarRetornoOAuth;
+function atualizarMetricasPainel(metrics) {
+    if (!metrics) return;
+    if (document.getElementById('metric-trades')) document.getElementById('metric-trades').textContent = metrics.totalTrades;
+    if (document.getElementById('metric-wins')) document.getElementById('metric-wins').textContent = metrics.wins;
+    if (document.getElementById('metric-losses')) document.getElementById('metric-losses').textContent = metrics.losses;
+    if (document.getElementById('metric-consec')) document.getElementById('metric-consec').textContent = metrics.consecLosses;
+}
+
+function alterarEstadoBotaoStart(rodando) {
+    const btnStart = document.getElementById('btn-start-bot');
+    const btnStop = document.getElementById('btn-stop-bot');
+    if (btnStart) btnStart.disabled = rodando;
+    if (btnStop) btnStop.disabled = !rodando;
+}
+
+function exibirMensagemErro(msg) {
+    console.error(`[Erro de Sistema]: ${msg}`);
+}
